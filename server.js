@@ -31,7 +31,7 @@ function connectWebSocket() {
     
     // Resubscribe to all active symbols for NEWS
     activeSymbols.forEach(symbol => {
-      console.log(`Subscribing to NEWS for ${symbol}`);
+      console.log(`Resubscribing to NEWS for ${symbol}`);
       finnhubWs.send(JSON.stringify({
         'type': 'subscribe-news',
         'symbol': symbol
@@ -102,10 +102,12 @@ function connectWebSocket() {
 
 // Health check
 app.get('/', (req, res) => {
+  const isAllNews = activeSymbols.has('*');
   res.json({
     status: 'running',
     websocket_connected: finnhubWs && finnhubWs.readyState === WebSocket.OPEN,
     active_symbols: Array.from(activeSymbols),
+    subscription_mode: isAllNews ? 'all_news' : 'ticker_specific',
     subscription_type: 'news',
     plan: 'fundamental-1',
     timestamp: new Date().toISOString()
@@ -113,7 +115,122 @@ app.get('/', (req, res) => {
 });
 
 // Subscribe to a single symbol (NEWS ONLY)
-const WebSocket = require('ws');
+app.post('/subscribe/:symbol', (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  
+  if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
+    console.log(`Subscribing to NEWS for ${symbol}`);
+    
+    // Subscribe to NEWS (not trades)
+    finnhubWs.send(JSON.stringify({
+      'type': 'subscribe-news',
+      'symbol': symbol
+    }));
+    
+    activeSymbols.add(symbol);
+    
+    res.json({
+      success: true,
+      message: `Subscribed to NEWS for ${symbol}`,
+      active_symbols: Array.from(activeSymbols)
+    });
+  } else {
+    res.status(503).json({
+      error: 'WebSocket not connected'
+    });
+  }
+});
+
+// Bulk subscribe - replaces all subscriptions (NEWS ONLY)
+app.post('/subscribe-bulk', (req, res) => {
+  const { tickers } = req.body;
+  
+  console.log(`Bulk subscribe request for NEWS: ${tickers}`);
+  
+  if (!Array.isArray(tickers)) {
+    return res.status(400).json({
+      error: 'Tickers must be an array'
+    });
+  }
+  
+  if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
+    // Unsubscribe from all current symbols
+    activeSymbols.forEach(symbol => {
+      finnhubWs.send(JSON.stringify({
+        'type': 'unsubscribe-news',
+        'symbol': symbol
+      }));
+    });
+    
+    // Clear and set new symbols
+    activeSymbols.clear();
+    
+    // Subscribe to new symbols (NEWS ONLY)
+    tickers.forEach(ticker => {
+      const symbol = ticker.toUpperCase();
+      
+      console.log(`Subscribing to NEWS for ${symbol}`);
+      
+      // Subscribe to NEWS
+      finnhubWs.send(JSON.stringify({
+        'type': 'subscribe-news',
+        'symbol': symbol
+      }));
+      
+      activeSymbols.add(symbol);
+    });
+    
+    res.json({
+      success: true,
+      message: `Subscribed to NEWS for ${tickers.length} symbols`,
+      active_symbols: Array.from(activeSymbols),
+      mode: 'ticker_specific'
+    });
+  } else {
+    res.status(503).json({
+      error: 'WebSocket not connected'
+    });
+  }
+});
+
+// Subscribe to ALL market news
+app.post('/subscribe-all-news', (req, res) => {
+  if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
+    // Clear existing subscriptions
+    activeSymbols.forEach(symbol => {
+      finnhubWs.send(JSON.stringify({
+        'type': 'unsubscribe-news',
+        'symbol': symbol
+      }));
+    });
+    activeSymbols.clear();
+    
+    console.log('Subscribing to ALL market news');
+    
+    // Subscribe to all news
+    finnhubWs.send(JSON.stringify({
+      'type': 'subscribe-news',
+      'symbol': '*'
+    }));
+    
+    // Track that we're in "all news" mode
+    activeSymbols.add('*');
+    
+    res.json({
+      success: true,
+      message: 'Subscribed to ALL market news',
+      mode: 'all_news',
+      active_symbols: Array.from(activeSymbols)
+    });
+  } else {
+    res.status(503).json({
+      error: 'WebSocket not connected'
+    });
+  }
+});
+
+// Unsubscribe from a symbol
+app.post('/unsubscribe/:symbol', (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
   
   if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
@@ -136,12 +253,50 @@ const WebSocket = require('ws');
   }
 });
 
+// Clear all subscriptions
+app.post('/unsubscribe-all', (req, res) => {
+  if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
+    activeSymbols.forEach(symbol => {
+      finnhubWs.send(JSON.stringify({
+        'type': 'unsubscribe-news',
+        'symbol': symbol
+      }));
+    });
+    
+    activeSymbols.clear();
+    
+    res.json({
+      success: true,
+      message: 'Unsubscribed from all symbols',
+      active_symbols: [],
+      mode: 'none'
+    });
+  } else {
+    res.status(503).json({
+      error: 'WebSocket not connected'
+    });
+  }
+});
+
 // Get all active subscriptions
 app.get('/subscriptions', (req, res) => {
+  const isAllNews = activeSymbols.has('*');
   res.json({
     active_symbols: Array.from(activeSymbols),
     count: activeSymbols.size,
     subscription_type: 'news',
+    mode: isAllNews ? 'all_news' : 'ticker_specific',
+    websocket_connected: finnhubWs && finnhubWs.readyState === WebSocket.OPEN
+  });
+});
+
+// Check current subscription mode
+app.get('/mode', (req, res) => {
+  const isAllNews = activeSymbols.has('*');
+  res.json({
+    mode: isAllNews ? 'all_news' : 'ticker_specific',
+    active_symbols: Array.from(activeSymbols),
+    count: activeSymbols.size,
     websocket_connected: finnhubWs && finnhubWs.readyState === WebSocket.OPEN
   });
 });
